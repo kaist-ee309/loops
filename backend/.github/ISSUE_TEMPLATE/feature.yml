@@ -1,0 +1,50 @@
+name: Feature Request
+description: 새로운 기능 또는 개선 사항 제안
+title: "[FEATURE] "
+labels: ["type:feature"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: 기능 설명
+      description: 어떤 기능인가요? 왜 필요한가요? 어떻게 구현되면 좋을까요?
+      placeholder: |
+        예: 사용자가 여러 덱을 동시에 학습할 수 있는 기능이 필요합니다.
+        현재는 하나씩만 가능해서 불편합니다.
+        API 엔드포인트에서 deck_ids 배열을 받아서 여러 덱의 카드를 합쳐서 반환
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: 우선순위
+      description: 얼마나 급한가요?
+      options:
+        - P0 (즉시 필요)
+        - P1 (빠른 시일 내)
+        - P2 (보통)
+        - P3 (나중에)
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: 추가 정보
+      description: 그 외 참고할 만한 정보가 있나요?
+      placeholder: |
+        - 관련 이슈 링크
+        - 참고 문서
+        - 스크린샷 등
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: 체크리스트
+      description: 이슈를 제출하기 전에 확인해주세요
+      options:
+        - label: 중복된 이슈가 없는지 확인했습니다
+          required: true
+        - label: 문서를 먼저 확인했습니다
+          required: true

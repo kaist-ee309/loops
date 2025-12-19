@@ -1,0 +1,309 @@
+name: Project Automation
+
+on:
+  pull_request_target:
+    types: [opened, ready_for_review, closed]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  repository-projects: write
+
+jobs:
+  pr-auto-label:
+    name: Auto-label PR based on files changed
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request_target' && github.event.action == 'opened'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Auto-label based on files
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number
+            });
+
+            const labels = new Set();
+
+            for (const file of files) {
+              const path = file.filename;
+
+              // 파일 경로에 따라 라벨 추가
+              if (path.includes('alembic/') || path.includes('models/')) {
+                labels.add('area:database');
+              }
+              if (path.includes('api/')) {
+                labels.add('area:api');
+              }
+              if (path.includes('services/')) {
+                labels.add('area:service');
+              }
+              if (path.includes('test') || path.includes('spec')) {
+                labels.add('type:test');
+              }
+              if (path.includes('.md') || path.includes('docs/')) {
+                labels.add('type:docs');
+              }
+            }
+
+            if (labels.size > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                labels: Array.from(labels)
+              });
+            }
+
+  check-migrations:
+    name: Check if migration is needed
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request_target'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for model changes
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number
+            });
+
+            const hasModelChanges = files.some(file =>
+              file.filename.includes('app/models/') &&
+              !file.filename.includes('__init__.py')
+            );
+
+            const hasMigration = files.some(file =>
+              file.filename.includes('alembic/versions/')
+            );
+
+            if (hasModelChanges && !hasMigration) {
+              const comment = `
+              ⚠️ **마이그레이션 체크**
+
+              모델 파일이 변경되었지만 마이그레이션이 포함되지 않았습니다.
+
+              마이그레이션이 필요한 경우:
+              \`\`\`bash
+              just revision "description of changes"
+              \`\`\`
+
+              마이그레이션이 필요하지 않은 경우 이 코멘트를 무시하세요.
+              `;
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                body: comment
+              });
+            }
+
+  update-issue-on-pr-merge:
+    name: Update linked issues when PR is merged
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request_target' && github.event.action == 'closed' && github.event.pull_request.merged == true
+    steps:
+      - name: Add completion comment to linked issues
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const prBody = pr.body || '';
+
+            // PR 본문에서 Closes #123 형태의 이슈 번호 추출
+            const issueRefs = prBody.match(/(close[sd]?|fix(e[sd])?|resolve[sd]?)\s+#(\d+)/gi);
+
+            if (issueRefs) {
+              for (const ref of issueRefs) {
+                const issueNumber = ref.match(/#(\d+)/)[1];
+
+                const comment = `
+                ✅ **완료됨**
+
+                이 이슈는 PR #${pr.number}에서 해결되어 머지되었습니다.
+
+                - 머지됨: ${new Date().toISOString()}
+                - 머지한 사람: @${pr.merged_by.login}
+                `;
+
+                try {
+                  await github.rest.issues.createComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: parseInt(issueNumber),
+                    body: comment
+                  });
+                } catch (error) {
+                  console.log(`Failed to comment on issue #${issueNumber}: ${error.message}`);
+                }
+              }
+            }
+
+  move-pr-to-in-review:
+    name: Move PR to In Review
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'pull_request_target' &&
+      (github.event.action == 'opened' || github.event.action == 'ready_for_review')
+    steps:
+      - name: Move PR to In Review column
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const projectNumber = process.env.PROJECT_NUMBER;
+
+            // Skip if PROJECT_NUMBER is not configured
+            if (!projectNumber) {
+              console.log('⏭️ Skipping: PROJECT_NUMBER secret is not configured.');
+              console.log('To enable this feature, set PROJECT_NUMBER secret to your GitHub Project number.');
+              return;
+            }
+
+            const inReviewFieldValue = 'In Review'; // 컬럼 이름 (Status 필드 값)
+
+            const pr = context.payload.pull_request;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issueId = pr.node_id; // PR의 GraphQL node ID
+
+            // 1. 프로젝트 정보 조회 (organization only - ee309-team-goat is an org)
+            const projectQuery = `
+              query($owner: String!, $number: Int!) {
+                organization(login: $owner) {
+                  projectV2(number: $number) {
+                    id
+                    fields(first: 20) {
+                      nodes {
+                        ... on ProjectV2Field {
+                          id
+                          name
+                        }
+                        ... on ProjectV2SingleSelectField {
+                          id
+                          name
+                          options {
+                            id
+                            name
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            let projectData;
+            try {
+              projectData = await github.graphql(projectQuery, {
+                owner: owner,
+                number: parseInt(projectNumber)
+              });
+            } catch (error) {
+              console.log('⚠️ Error fetching project:', error.message);
+              console.log('Make sure PROJECT_NUMBER is correct and the project exists.');
+              return;
+            }
+
+            const project = projectData.organization?.projectV2;
+            if (!project) {
+              console.log(`⚠️ Project #${projectNumber} not found in organization "${owner}".`);
+              console.log('Check: Settings → Secrets → Actions → PROJECT_NUMBER');
+              return;
+            }
+
+            // 2. Status 필드와 In Review 옵션 찾기
+            const statusField = project.fields.nodes.find(f => f.name === 'Status');
+            if (!statusField) {
+              console.log('Status field not found in project.');
+              return;
+            }
+
+            const inReviewOption = statusField.options?.find(opt => opt.name === inReviewFieldValue);
+            if (!inReviewOption) {
+              console.log(`"${inReviewFieldValue}" option not found in Status field.`);
+              return;
+            }
+
+            // 3. PR이 프로젝트에 있는지 확인하고 아이템 ID 찾기
+            const itemQuery = `
+              query($projectId: ID!, $issueId: ID!) {
+                node(id: $projectId) {
+                  ... on ProjectV2 {
+                    items(first: 100) {
+                      nodes {
+                        id
+                        content {
+                          ... on PullRequest {
+                            id
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const itemData = await github.graphql(itemQuery, {
+              projectId: project.id,
+              issueId: issueId
+            });
+
+            const projectItem = itemData.node.items.nodes.find(
+              item => item.content?.id === issueId
+            );
+
+            if (!projectItem) {
+              console.log('PR not found in project. It may need to be added first.');
+              return;
+            }
+
+            // 4. Status 필드를 In Review로 업데이트
+            const updateMutation = `
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                updateProjectV2ItemFieldValue(
+                  input: {
+                    projectId: $projectId
+                    itemId: $itemId
+                    fieldId: $fieldId
+                    value: { singleSelectOptionId: $optionId }
+                  }
+                ) {
+                  projectV2Item {
+                    id
+                  }
+                }
+              }
+            `;
+
+            try {
+              await github.graphql(updateMutation, {
+                projectId: project.id,
+                itemId: projectItem.id,
+                fieldId: statusField.id,
+                optionId: inReviewOption.id
+              });
+              console.log(`✅ PR #${pr.number} moved to "In Review"`);
+            } catch (error) {
+              console.log(`Failed to update project item: ${error.message}`);
+            }
+        env:
+          PROJECT_NUMBER: ${{ secrets.PROJECT_NUMBER }}

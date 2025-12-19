@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://github.com/YOUR_USERNAME/loops-api/tree/main/docs
+    about: 프로젝트 문서 및 가이드를 확인하세요
+  - name: Discussions
+    url: https://github.com/YOUR_USERNAME/loops-api/discussions
+    about: 질문이나 아이디어 공유는 Discussions를 이용해주세요

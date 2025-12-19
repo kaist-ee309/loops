@@ -1,0 +1,51 @@
+services:
+  # Local PostgreSQL for development
+  # For production, use Supabase by removing this service and updating the DATABASE_URL in the api service
+  postgres:
+    image: postgres:16-alpine
+    container_name: loops-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: loops
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: loops-api
+    ports:
+      - "8080:8080"
+    environment:
+      - DEBUG=True
+      # For local development with the postgres service above
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/loops
+      # For Supabase, use this format instead (and remove depends_on):
+      # - DATABASE_URL=postgresql+asyncpg://postgres:[YOUR-PASSWORD]@db.[YOUR-PROJECT-REF].supabase.co:5432/postgres
+    env_file:
+      - .env
+    volumes:
+      - ./src:/app/src
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  postgres_data:
